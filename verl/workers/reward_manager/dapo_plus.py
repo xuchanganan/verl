@@ -49,7 +49,7 @@ async def parallel_compute_score_async(
         try:
             # Create tasks for all rows
             tasks_async = [
-                single_compute_score(evaluation_func, c, t, gt, ei, executor, timeout=300.0)
+                single_compute_score(evaluation_func, c, t, gt, ei, executor, timeout=600.0)
                 for c, t, gt, ei in zip(completions, tasks, ground_truths, extra_info, strict=True)
             ]
             results = await asyncio.gather(*tasks_async, return_exceptions=False)
@@ -142,7 +142,6 @@ class DAPOPlusRewardManager(AbstractRewardManager):
             if response_str.endswith(eos_token):
                 response_str = response_str[: -len(eos_token)]
             responses_str_list.append(response_str)
-            print(f"获得的response_str如下所示:{response_str}")
 
         ground_truths = [
             (item.non_tensor_batch.get("reward_model") or {}).get("ground_truth") for item in data
@@ -156,7 +155,7 @@ class DAPOPlusRewardManager(AbstractRewardManager):
             tasks=data_sources,
             ground_truths=ground_truths,
             extra_info=extra_info,
-            num_processes=psutil.cpu_count(logical=False) or 1,
+            num_processes=128,
         )
 
         for i in range(len(data)):
