@@ -1,10 +1,6 @@
 from collections import defaultdict
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 from typing import Any, Callable, Optional
-
-import psutil
 import torch
 
 from verl import DataProto
@@ -13,76 +9,62 @@ from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 
-async def single_compute_score(evaluation_func, completion, task, ground_truth, task_extra_info, executor, timeout=300.0):
-    loop = asyncio.get_running_loop()
+async def single_compute_score(evaluation_func, completion, task, ground_truth, task_extra_info, timeout=300.0):
+    """
+    Asynchronously computes a score for a single completion, with timeout and error handling.
+    """
     try:
-        # Ensure process_completion is called properly
-        future = loop.run_in_executor(
-            executor,
-            partial(
-                evaluation_func,
+        return await asyncio.wait_for(
+            evaluation_func(
                 data_source=task,
                 solution_str=completion,
                 ground_truth=ground_truth,
                 extra_info=task_extra_info,
             ),
+            timeout=timeout
         )
-        return await asyncio.wait_for(future, timeout=timeout)
     except asyncio.TimeoutError:
-        print(f"[Timeout] Task timeout: {completion}")
-        return None  # Default value for timed-out rows
+        print(f"[Timeout] Task timeout after {timeout}s: completion starting with '{completion[:80]}...'")
+        return {"score": 0.0, "status": "invalid"}
     except Exception as e:
-        print(f"[Error] Task failed: {e}, completion: {completion[:80]}")
-        return None  # Default value for failed rows
+        print(f"[Error] Task failed: {e}, completion starting with '{completion[:80]}...'")
+        return {"score": 0.0, "status": "invalid"}
 
 
+# 修改后：移除了 ProcessPoolExecutor，直接使用 asyncio.gather
 async def parallel_compute_score_async(
-    evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=64
+    evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=64  # num_processes 参数保留但不再使用
 ):
+    """
+    Concurrently computes scores for multiple completions using asyncio.
+    """
     if extra_info is None:
         extra_info = [None] * len(completions)
     if ground_truths is None:
         ground_truths = [None] * len(completions)
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
-        # to prevent very occasional starvation caused by some anomalous programs ( like infinite loop ), the
-        # exceptions in async programs will instantly halt the evaluation, and all summoned processes will be killed.
-        try:
-            # Create tasks for all rows
-            tasks_async = [
-                single_compute_score(evaluation_func, c, t, gt, ei, executor, timeout=600.0)
-                for c, t, gt, ei in zip(completions, tasks, ground_truths, extra_info, strict=True)
-            ]
-            results = await asyncio.gather(*tasks_async, return_exceptions=False)
-        except Exception as e:
-            print(f"[Exception] async gather failed: {e}")
-            raise
-        finally:
-            terminated_count = 0
-            for pid, proc in executor._processes.items():
-                try:
-                    p = psutil.Process(pid)
-                    p.terminate()
-                    try:
-                        p.wait(timeout=5)
-                    except psutil.TimeoutExpired:
-                        p.kill()
-                    terminated_count += 1
-                except Exception:
-                    pass
-            print(f"[Shutdown] {terminated_count} subprocess(es) terminated.")
+
+    tasks_async = [
+        single_compute_score(evaluation_func, c, t, gt, ei, timeout=600.0)
+        for c, t, gt, ei in zip(completions, tasks, ground_truths, extra_info, strict=True)
+    ]
+
+    try:
+        results = await asyncio.gather(*tasks_async, return_exceptions=False)
+    except Exception as e:
+        print(f"[Exception] asyncio.gather failed: {e}")
+        # 在这里，如果一个任务失败（且未在内部捕获），gather会立即中止并抛出异常
+        raise
 
     return results
 
 
 def run_reward_scoring(evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=64):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(
-            parallel_compute_score_async(evaluation_func, completions, tasks, ground_truths, extra_info, num_processes)
-        )
-    finally:
-        loop.close()
+    """
+    Entry point to run the asynchronous scoring process.
+    """
+    return asyncio.run(
+        parallel_compute_score_async(evaluation_func, completions, tasks, ground_truths, extra_info)
+    )
 
 
 @register("dapo_plus")
