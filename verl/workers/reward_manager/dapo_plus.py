@@ -136,12 +136,13 @@ class DAPOPlusRewardManager(AbstractRewardManager):
         responses_str_list = []
         valid_response_lengths = data.batch["attention_mask"][:, prompt_length:].sum(dim=-1)
         for i in range(len(response_ids)):
-            valid_response_ids = response_ids[i, prompt_length : prompt_length + valid_response_lengths[i]]
+            valid_response_ids = response_ids[i, : valid_response_lengths[i]]
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
             eos_token = self.tokenizer.eos_token
             if response_str.endswith(eos_token):
                 response_str = response_str[: -len(eos_token)]
             responses_str_list.append(response_str)
+            print(f"获得的response_str如下所示:{response_str}")
 
         ground_truths = [
             (item.non_tensor_batch.get("reward_model") or {}).get("ground_truth") for item in data
@@ -167,6 +168,9 @@ class DAPOPlusRewardManager(AbstractRewardManager):
                 score = result["score"]
                 for key, value in result.items():
                     reward_extra_info[key].append(value)
+                if "acc" not in result:
+                    # 额外补充.
+                    reward_extra_info["acc"].append(score)
             elif isinstance(result, (int, float, bool)):
                 score = float(result)
                 reward_extra_info["acc"].append(score)
