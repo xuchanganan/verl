@@ -31,39 +31,55 @@ async def single_compute_score(evaluation_func, completion, task, ground_truth, 
         return {"score": 0.0, "status": "invalid"}
 
 
-# 修改后：移除了 ProcessPoolExecutor，直接使用 asyncio.gather
 async def parallel_compute_score_async(
-    evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=64  # num_processes 参数保留但不再使用
+    evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=128
 ):
     """
-    Concurrently computes scores for multiple completions using asyncio.
+    Concurrently computes scores for multiple completions using asyncio, with concurrency control.
     """
     if extra_info is None:
         extra_info = [None] * len(completions)
     if ground_truths is None:
         ground_truths = [None] * len(completions)
 
-    tasks_async = [
-        single_compute_score(evaluation_func, c, t, gt, ei, timeout=600.0)
+    # 1. 创建一个 Semaphore 对象来限制并发数
+    semaphore = asyncio.Semaphore(num_processes)
+
+    # 2. 创建一个带信号量控制的 "worker" 任务
+    async def sem_task(completion, task, ground_truth, task_extra_info):
+        async with semaphore:
+            # 在信号量的保护下执行单个任务的计算
+            return await single_compute_score(
+                evaluation_func,
+                completion,
+                task,
+                ground_truth,
+                task_extra_info,
+                timeout=600.0
+            )
+
+    # 3. 创建所有任务的列表，注意这里调用的是我们新定义的 sem_task
+    tasks_to_run = [
+        sem_task(c, t, gt, ei)
         for c, t, gt, ei in zip(completions, tasks, ground_truths, extra_info, strict=True)
     ]
 
     try:
-        results = await asyncio.gather(*tasks_async, return_exceptions=False)
+        results = await asyncio.gather(*tasks_to_run, return_exceptions=False)
     except Exception as e:
         print(f"[Exception] asyncio.gather failed: {e}")
-        # 在这里，如果一个任务失败（且未在内部捕获），gather会立即中止并抛出异常
         raise
 
     return results
 
 
-def run_reward_scoring(evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=64):
+
+def run_reward_scoring(evaluation_func, completions, tasks, ground_truths=None, extra_info=None, num_processes=128):
     """
     Entry point to run the asynchronous scoring process.
     """
     return asyncio.run(
-        parallel_compute_score_async(evaluation_func, completions, tasks, ground_truths, extra_info)
+        parallel_compute_score_async(evaluation_func, completions, tasks, ground_truths, extra_info, num_processes)
     )
 
 
