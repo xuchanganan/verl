@@ -425,6 +425,26 @@ class OneStepOffRayTrainer(RayPPOTrainer):
                 batch = batch.union(gen_batch_output)
 
                 batch.batch["response_mask"] = compute_response_mask(batch)
+                if "status" in batch.non_tensor_batch:
+                    with torch.no_grad():
+                        status_array = batch.non_tensor_batch["status"]
+                        # Create a boolean numpy array to identify invalid trajectories
+                        is_invalid_np = (status_array == "invalid")
+                        # Create trajectory_mask tensor from the boolean numpy array.
+                        # Trajectories that are NOT invalid will have a mask value of 1.0.
+                        device = batch.batch["attention_mask"].device
+                        trajectory_mask = torch.from_numpy(~is_invalid_np).to(device=device, dtype=torch.float32)
+                        # Expand mask to match response_mask shape for element-wise multiplication
+                        expanded_mask = trajectory_mask.unsqueeze(-1) * batch.batch["response_mask"]
+                        # Store the mask in the batch for later use
+                        batch.batch["trajectory_mask"] = expanded_mask
+
+                        # Count valid and invalid trajectories for logging
+                        invalid_trajectories = is_invalid_np.sum().item()
+                        valid_trajectories = (status_array == "valid").sum().item()
+                        if invalid_trajectories > 0:
+                            print(f"排除了 {invalid_trajectories} 个 status 为 invalid 的轨迹, 保留了 {valid_trajectories} 个 status 为 valid 的轨迹")
+                        batch.batch["response_mask"] = batch.batch["response_mask"] * batch.batch["trajectory_mask"]
                 # Balance the number of valid tokens across DP ranks.
                 # NOTE: This usually changes the order of data in the `batch`,
                 # which won't affect the advantage calculation (since it's based on uid),
