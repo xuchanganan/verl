@@ -78,20 +78,18 @@ def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
     function_name = reward_fn_config.get("name")
     assert function_name is not None
 
-    module = sys.modules.get("custom_module", None)
-    if module is None:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Reward function file '{file_path}' not found.")
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Reward function file '{file_path}' not found.")
 
-        spec = importlib.util.spec_from_file_location("custom_module", file_path)
-        assert spec is not None
-        module = importlib.util.module_from_spec(spec)
-        try:
-            sys.modules["custom_module"] = module
-            assert spec.loader is not None
-            spec.loader.exec_module(module)
-        except Exception as e:
-            raise RuntimeError(f"Error loading module from '{file_path}': {e}") from e
+    module_dir = os.path.dirname(file_path)
+    module_name = os.path.splitext(os.path.basename(file_path))[0]
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as e:
+        raise RuntimeError(f"Error loading module from '{file_path}': {e}") from e
 
     if not hasattr(module, function_name):
         raise AttributeError(f"Reward function '{function_name}' not found in '{module.__file__}'.")
