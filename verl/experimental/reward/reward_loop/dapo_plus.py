@@ -1,5 +1,7 @@
 import inspect
 import asyncio
+import functools
+from collections import defaultdict
 
 from verl import DataProto
 from verl.experimental.reward.reward_loop import register
@@ -35,8 +37,12 @@ class DAPOPlusRewardLoopManager(RewardLoopManagerBase):
     def __init__(self, config, tokenizer, compute_score=None, reward_router_address=None, reward_model_tokenizer=None):
         super().__init__(config, tokenizer)
         self.compute_score = compute_score or default_compute_score
-        self.is_async_reward_score = inspect.iscoroutinefunction(self.compute_score)
-        print("compute_score func name = {}, is_async_reward_score = {}".format(self.compute_score.__name__, self.is_async_reward_score))
+
+        original_func = self.compute_score
+        if isinstance(self.compute_score, functools.partial):
+            original_func = self.compute_score.func
+        self.is_async_reward_score = inspect.iscoroutinefunction(original_func)
+        print("compute_score func name = {}, is_async_reward_score = {}".format(original_func.__name__, self.is_async_reward_score))
 
         # DAPO Reward Config
         overlong_buffer_cfg = config.reward_model.get("reward_kwargs", {}).get("overlong_buffer_cfg", None)
@@ -93,8 +99,7 @@ class DAPOPlusRewardLoopManager(RewardLoopManagerBase):
                 ),
             )
         
-        reward_extra_info = {}
-
+        reward_extra_info = defaultdict(list)
         score: float
         if isinstance(result, dict):
             score = result["score"]
