@@ -194,9 +194,9 @@ class SGLangHttpServer:
         """Generate sequence with token-in-token-out."""
         # TODO(@wuxibin): switch to `/generate` http endpoint once multi-modal support ready.
         if "max_new_tokens" not in sampling_params:
-            sampling_params["max_new_tokens"] = min(
-                self.config.response_length, self.config.max_model_len - len(prompt_ids) - 1
-            )
+            sampling_params["max_new_tokens"] = min(self.config.response_length, self.config.max_model_len - len(prompt_ids) - 1)
+        else:
+            sampling_params["max_new_tokens"] = min(sampling_params["max_new_tokens"], self.config.max_model_len - len(prompt_ids) - 1)
         return_logprob = sampling_params.pop("logprobs", False)
 
         request = GenerateReqInput(
