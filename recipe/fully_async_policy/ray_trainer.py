@@ -347,6 +347,12 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
                 future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
             else:
                 reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                if "status" in reward_extra_infos_dict:
+                    status_array = np.array(reward_extra_infos_dict["status"])  
+                    is_valid_np = (status_array != "invalid")  # 注意这里是 !=  
+                    batch.batch["response_mask"] *= is_valid_np  
+                    print(f"mask掉{np.sum(~is_valid_np)}条invalid轨迹")
 
         # recompute old_log_probs
         with marked_timer("old_log_prob", timing_raw, color="blue"):
