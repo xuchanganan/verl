@@ -349,9 +349,11 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
                 reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
                 batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
                 if "status" in reward_extra_infos_dict:
-                    status_array = np.array(reward_extra_infos_dict["status"])  
-                    is_valid_np = (status_array != "invalid")  # 注意这里是 !=  
-                    batch.batch["response_mask"] *= is_valid_np  
+                    status_array = np.array(reward_extra_infos_dict["status"])
+                    is_valid_np = (status_array != "invalid")  # 注意这里是 !=
+                    is_valid_tensor = torch.from_numpy(is_valid_np).to(batch.batch["response_mask"].device)
+                    is_valid_tensor_reshaped = is_valid_tensor.unsqueeze(-1)
+                    batch.batch["response_mask"] *= is_valid_tensor_reshaped  
                     print(f"mask掉{np.sum(~is_valid_np)}条invalid轨迹")
 
         # recompute old_log_probs
