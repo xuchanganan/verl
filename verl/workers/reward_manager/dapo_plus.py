@@ -25,10 +25,10 @@ async def single_compute_score(evaluation_func, completion, task, ground_truth, 
         )
     except asyncio.TimeoutError:
         print(f"[Timeout] Task timeout after {timeout}s: completion starting with '{completion[:80]}...'")
-        return {"score": 0.0, "status": "invalid"}
+        return {"score": -1.0, "status": "invalid"}
     except Exception as e:
         print(f"[Error] Task failed: {e}, completion starting with '{completion[:80]}...'")
-        return {"score": 0.0, "status": "invalid"}
+        return {"score": -1.0, "status": "invalid"}
 
 
 async def parallel_compute_score_async(
@@ -172,7 +172,7 @@ class DAPOPlusRewardManager(AbstractRewardManager):
                 score = float(result)
                 reward_extra_info["acc"].append(score)
             else:
-                score = 0.0
+                score = -1.0
                 reward_extra_info["acc"].append(score)
 
             reward = score
