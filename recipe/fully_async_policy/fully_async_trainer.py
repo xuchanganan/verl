@@ -20,6 +20,8 @@ from typing import Any
 import ray
 from omegaconf import OmegaConf
 from tqdm import tqdm
+import numpy as np
+import torch
 
 from recipe.fully_async_policy.detach_utils import (
     MetricsAggregator,
@@ -34,6 +36,9 @@ from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.utils.debug import marked_timer
 
+from verl.trainer.ppo.reward import compute_reward, compute_reward_async
+from collections import defaultdict
+from verl import DataProto
 
 @ray.remote(num_cpus=10)
 class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
@@ -247,16 +252,93 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
 
         # Use queue mode, no need for traditional dataloader iterator
         # Initialize to get the first batch of data
+        batch = None
+        num_prompt_in_batch = 0
+        num_gen_batches = 0
         while True:
             metrics = {}
             timing_raw = {}
-
             with marked_timer("step", timing_raw):
                 with marked_timer("gen", timing_raw, color="red"):
-                    epoch, batch = self._get_samples_from_queue()
-                    if batch is None:
+                    epoch, new_batch = self._get_samples_from_queue()
+                    if new_batch is None:
                         break
                     self._collect_metrics_from_samples(batch, metrics)
+
+                    with marked_timer("reward", timing_raw, color="yellow"):
+                        # compute reward model score
+                        if self.use_rm:
+                            reward_tensor = self.rm_wg.compute_rm_score(new_batch)
+                            new_batch = new_batch.union(reward_tensor)
+
+                        reward_extra_infos_dict: dict[str, list]
+                        if self.config.reward_model.launch_reward_fn_async:
+                            future_reward = compute_reward_async.remote(data=new_batch, reward_fn=self.reward_fn)
+                            reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+                        else:
+                            reward_tensor, reward_extra_infos_dict = compute_reward(new_batch, self.reward_fn)
+                            new_batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                            if "status" in reward_extra_infos_dict:
+                                status_array = np.array(reward_extra_infos_dict["status"])
+                                is_valid_np = (status_array != "invalid")  # 注意这里是 !=
+                                is_valid_tensor = torch.from_numpy(is_valid_np).to(new_batch.batch["response_mask"].device)
+                                is_valid_tensor_reshaped = is_valid_tensor.unsqueeze(-1)
+                                new_batch.batch["response_mask"] *= is_valid_tensor_reshaped  
+                                print(f"mask掉{np.sum(~is_valid_np)}条invalid轨迹")
+                        if reward_extra_infos_dict:
+                            new_batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                        new_batch.batch["token_level_scores"] = reward_tensor
+
+                    if not self.config.algorithm.filter_groups.enable:
+                        batch = new_batch
+                    else:
+                        metric_name = self.config.algorithm.filter_groups.metric
+                        if metric_name == "seq_final_reward":
+                            # Turn to numpy for easier filtering
+                            new_batch.non_tensor_batch["seq_final_reward"] = (new_batch.batch["token_level_rewards"].sum(dim=-1).numpy())
+                        elif metric_name == "seq_reward":
+                            new_batch.non_tensor_batch["seq_reward"] = (new_batch.batch["token_level_scores"].sum(dim=-1).numpy())
+                        # Collect the sequence reward for each trajectory
+                        prompt_uid2metric_vals = defaultdict(list)
+                        for uid, metric_val in zip(new_batch.non_tensor_batch["uid"], new_batch.non_tensor_batch[metric_name], strict=True):
+                            prompt_uid2metric_vals[uid].append(metric_val)
+
+                        prompt_uid2metric_std = {}
+                        for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
+                            prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
+                        
+                        kept_prompt_uids = []
+                        for uid, std in prompt_uid2metric_std.items():
+                            if std > 0 or len(prompt_uid2metric_vals[uid]) == 1:
+                                kept_prompt_uids.append(uid)
+                            else:
+                                print(f"排除了 prompt {uid} 因为 std={std} 而被过滤, scores={prompt_uid2metric_vals[uid]}")
+                        num_prompt_in_batch += len(kept_prompt_uids)
+
+                        kept_traj_idxs = []
+                        for idx, traj_from_prompt_uid in enumerate(new_batch.non_tensor_batch["uid"]):
+                            if traj_from_prompt_uid in kept_prompt_uids:
+                                kept_traj_idxs.append(idx)
+
+                        new_batch = new_batch[kept_traj_idxs]
+                        batch = new_batch if batch is None else DataProto.concat([batch, new_batch])
+
+                        if num_prompt_in_batch < self.required_samples:
+                            print(f"{num_prompt_in_batch=} < {self.required_samples=}")
+                            max_num_gen_batches = self.config.algorithm.filter_groups.max_num_gen_batches
+                            if max_num_gen_batches <= 0 or num_gen_batches < max_num_gen_batches:
+                                print(f"{num_gen_batches=}. Keep generating...")
+                                # 通过continue继续生成下一个batch.
+                                continue
+                            else:
+                                raise ValueError(
+                                    f"{num_gen_batches=} >= {max_num_gen_batches=}."
+                                    + " Generated too many. Please check if your data are too difficult."
+                                    + " You could also try set max_num_gen_batches=0 to enable endless trials."
+                                )
+                        else:
+                            batch = batch[:self.required_samples]
 
                 batch, reward_extra_infos_dict = self._process_batch_common(batch, metrics, timing_raw)
                 self._log_rollout(batch, reward_extra_infos_dict, timing_raw)
@@ -285,6 +367,9 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                         Validation metrics: {val_data.metrics}"
                     )
                 self.logger.log(data=val_data.timing_raw, step=val_data.param_version)
+            batch = None
+            num_prompt_in_batch = 0
+            num_gen_batches = 0
             self.global_steps += 1
 
         # final parameter sync and validate
