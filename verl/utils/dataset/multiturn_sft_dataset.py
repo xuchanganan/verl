@@ -302,6 +302,8 @@ class MultiTurnSFTDataset(Dataset):
             if override_loss_mask is not None:
                 if isinstance(override_loss_mask, np.ndarray):
                     override_loss_mask = override_loss_mask.item()
+                if isinstance(override_loss_mask, float):
+                    override_loss_mask = int(override_loss_mask)
                 assert isinstance(override_loss_mask, int), f"loss_mask should be int, got {type(override_loss_mask)}"
                 assert override_loss_mask in [0, 1], f"loss_mask should be 0 or 1, got {override_loss_mask}"
                 loss_mask = [override_loss_mask] * len(tokens)
