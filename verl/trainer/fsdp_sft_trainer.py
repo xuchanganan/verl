@@ -185,18 +185,21 @@ class FSDPSFTTrainer:
             pin_memory_device=device_name,
         )
 
-        self.val_sampler = DistributedSampler(
-            self.val_dataset, shuffle=False, num_replicas=world_size, rank=rank, drop_last=True
-        )
-        self.val_dataloader = StatefulDataLoader(
-            dataset=self.val_dataset,
-            batch_size=config.data.micro_batch_size_per_gpu,
-            sampler=self.val_sampler,
-            num_workers=8,
-            pin_memory=True,
-            drop_last=True,
-            pin_memory_device=device_name,
-        )
+        if self.val_dataset:
+            self.val_sampler = DistributedSampler(
+                self.val_dataset, shuffle=False, num_replicas=world_size, rank=rank, drop_last=True
+            )
+            self.val_dataloader = StatefulDataLoader(
+                dataset=self.val_dataset,
+                batch_size=config.data.micro_batch_size_per_gpu,
+                sampler=self.val_sampler,
+                num_workers=8,
+                pin_memory=True,
+                drop_last=True,
+                pin_memory_device=device_name,
+            )
+        else:
+            self.val_sampler = self.val_dataloader = None
 
     def _build_model_optimizer(self):
         # TODO (zhangchi.usc1992):
@@ -760,7 +763,7 @@ class FSDPSFTTrainer:
                 is_save_step = global_step % self.config.trainer.save_freq == 0
 
                 # early exit or validation step
-                if is_last_step or (self.config.trainer.test_freq > 0 and is_valid_step):
+                if self.val_dataloader and (is_last_step or (self.config.trainer.test_freq > 0 and is_valid_step)):
                     # Perform validation
                     val_losses = []
                     for val_data in self.val_dataloader:
