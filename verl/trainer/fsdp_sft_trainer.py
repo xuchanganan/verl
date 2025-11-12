@@ -812,12 +812,11 @@ def run_sft(config):
 
     local_model_path = copy_to_local(src=config.model.partial_pretrain, verbose=True)
     tokenizer = hf_tokenizer(local_model_path, trust_remote_code=config.model.trust_remote_code)
-    train_dataset = create_sft_dataset(
-        config.data.train_files, config.data, tokenizer, max_samples=config.data.get("train_max_samples", -1)
-    )
-    val_dataset = create_sft_dataset(
-        config.data.val_files, config.data, tokenizer, max_samples=config.data.get("val_max_samples", -1)
-    )
+    train_dataset = create_sft_dataset(config.data.train_files, config.data, tokenizer)
+    if config.data.val_files is not None:
+        val_dataset = create_sft_dataset(config.data.val_files, config.data, tokenizer)
+    else:
+        val_dataset = None
 
     trainer = FSDPSFTTrainer(
         config=config,
