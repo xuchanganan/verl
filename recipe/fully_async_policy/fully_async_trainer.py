@@ -322,7 +322,12 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                                 kept_traj_idxs.append(idx)
 
                         new_batch = new_batch[kept_traj_idxs]
-                        batch = new_batch if batch is None else DataProto.concat([batch, new_batch])
+                        if batch is None:
+                            batch = new_batch
+                        else:
+                            # fixme: 这里concat会在meta_info上发生冲突, 因此暂时丢弃new_batch的meta_info
+                            new_batch.meta_info = {}
+                            batch = DataProto.concat([batch, new_batch])
 
                         if num_prompt_in_batch < self.required_samples:
                             print(f"{num_prompt_in_batch=} < {self.required_samples=}")
