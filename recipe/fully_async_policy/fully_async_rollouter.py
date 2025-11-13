@@ -582,6 +582,14 @@ class FullyAsyncRollouter(FullyAsyncRayPPOTrainer):
                 )
             return True
 
+        if self.config.algorithm.filter_groups.enable:
+            # 如果开启了dapo的动态过滤.
+            filter_num = self.message_queue_client.get_request_sync()
+            if filter_num is not None:
+                # 非空的话, 需要更新staleness样本数.
+                print(f"[dapo]rollouter收到样本过滤请求, 当前样本数: {self.staleness_samples}, 需过滤样本数: {filter_num}")
+                self.staleness_samples -= filter_num
+        
         if self.staleness_samples >= self.max_required_samples:
             if not self.paused:
                 print(

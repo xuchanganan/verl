@@ -38,7 +38,8 @@ class MessageQueue:
         self.current_param_version = 0
 
         self.val_queue = deque()
-
+        # 用于处理dapo过滤后, 补齐样本数的逻辑.
+        self.request_queue = deque()
         try:
             if hasattr(config, "async_training") and config.async_training is not None:
                 self.staleness_threshold = getattr(config.async_training, "staleness_threshold", 3)
@@ -114,6 +115,20 @@ class MessageQueue:
             data = self.queue.popleft()
             self.total_consumed += 1
             return data, len(self.queue)
+        
+    async def put_request(self, request: Any) -> bool:
+        """
+        trainer向rollouter发送额外需要补充xxx条数据.
+        """
+        async with self._lock:
+            self.request_queue.append(request)
+            return True
+
+    async def get_request(self) -> Any | None:
+        async with self._lock:
+            if len(self.request_queue) > 0:
+                return self.request_queue.popleft()
+            return None
 
     async def update_param_version(self, version: int):
         """Update current parameter version"""
@@ -204,6 +219,14 @@ class MessageQueueClient:
 
     def __init__(self, queue_actor: Any):
         self.queue_actor = queue_actor
+    
+    async def put_request(self, request: Any) -> bool:
+        future = self.queue_actor.put_request.remote(request)
+        return await asyncio.wrap_future(future.future())
+
+    async def get_request(self) -> Any | None:
+        future = self.queue_actor.get_request.remote()
+        return await asyncio.wrap_future(future.future())
 
     async def put_sample(self, sample: Any, param_version: int) -> bool:
         """Put batch into queue (async)"""
@@ -255,6 +278,12 @@ class MessageQueueClient:
     def get_sample_sync(self) -> Any | None:
         """Get single sample from queue (sync - deprecated, use get_sample instead)"""
         return ray.get(self.queue_actor.get_sample.remote())
+
+    def put_request_sync(self, request: Any) -> bool:
+        return ray.get(self.queue_actor.put_request.remote(request))
+    
+    def get_request_sync(self) -> Any | None:
+        return ray.get(self.queue_actor.get_request.remote())
 
     def get_statistics_sync(self) -> dict[str, Any]:
         """Get statistics (sync - deprecated, use get_statistics instead)"""

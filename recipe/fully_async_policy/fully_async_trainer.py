@@ -308,12 +308,17 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                         for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
                             prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
                         
+                        filter_num = 0
                         kept_prompt_uids = []
                         for uid, std in prompt_uid2metric_std.items():
                             if std > 0 or len(prompt_uid2metric_vals[uid]) == 1:
                                 kept_prompt_uids.append(uid)
                             else:
                                 print(f"排除了 prompt {uid} 因为 std={std} 而被过滤, scores={prompt_uid2metric_vals[uid]}")
+                                filter_num += 1
+                        print(f"共排除{filter_num}条样本")
+                        status = self.message_queue_client.put_request_sync(filter_num)
+                        print(f"已通知message_client, 状态={status}")
                         num_prompt_in_batch += len(kept_prompt_uids)
 
                         kept_traj_idxs = []
