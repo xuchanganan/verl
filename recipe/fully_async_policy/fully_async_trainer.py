@@ -317,7 +317,7 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                             else:
                                 print(f"排除了 prompt {uid} 因为 std={std} 而被过滤, scores={prompt_uid2metric_vals[uid]}")
                                 filter_num += 1
-                        print(f"共排除{filter_num}条样本")
+                        print(f"保留{len(kept_prompt_uids)}条样本, 排除{filter_num}条样本")
                         status = self.message_queue_client.put_request_sync(filter_num)
                         print(f"已通知message_client, 丢弃{filter_num}条样本, 状态={status}")
                         num_prompt_in_batch += len(kept_prompt_uids)
@@ -349,11 +349,16 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                                     + " You could also try set max_num_gen_batches=0 to enable endless trials."
                                 )
                         else:
-                            discard_num = len(batch) - self.required_samples
-                            print(f"当前{len(batch)}个样本, 超过{self.required_samples}个, 丢弃{discard_num}个")
+                            # Align the batch.
+                            rollout_n = self.config.actor_rollout_ref.rollout.n
+                            traj_bsz = self.required_samples * rollout_n
+                            discard_num = len(batch) - traj_bsz
+                            assert discard_num % rollout_n == 0, f"{discard_num=} % {rollout_n=} != 0"
+                            discard_num //= rollout_n
+                            print(f"当前{len(batch)/rollout_n}个样本, 超过{self.required_samples}个, 丢弃{discard_num}个")
                             status = self.message_queue_client.put_request_sync(discard_num)
                             print(f"已通知message_client丢弃{discard_num}个样本, 状态={status}")
-                            batch = batch[:self.required_samples]
+                            batch = batch[:traj_bsz]
 
                 batch, reward_extra_infos_dict = self._process_batch_common(batch, metrics, timing_raw)
                 self._log_rollout(batch, reward_extra_infos_dict, timing_raw)
