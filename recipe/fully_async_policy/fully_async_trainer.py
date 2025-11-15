@@ -252,6 +252,8 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
 
         # Use queue mode, no need for traditional dataloader iterator
         # Initialize to get the first batch of data
+        # fixme: 临时记录reward_extra_infos_dict.keys()
+        reward_extra_keys = set()
         batch = None
         num_prompt_in_batch = 0
         num_gen_batches = 0
@@ -287,6 +289,8 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                                 new_batch.batch["response_mask"] *= is_valid_tensor_reshaped  
                                 print(f"mask掉{np.sum(~is_valid_np)}条invalid轨迹")
                         if reward_extra_infos_dict:
+                            for k in reward_extra_infos_dict.keys():
+                                reward_extra_keys.add(k)
                             new_batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
                         new_batch.batch["token_level_scores"] = reward_tensor
@@ -360,7 +364,10 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                             print(f"已通知message_client丢弃{discard_num}个样本, 状态={status}")
                             batch = batch[:traj_bsz]
 
-                batch, reward_extra_infos_dict = self._process_batch_common(batch, metrics, timing_raw)
+                batch, _ = self._process_batch_common(batch, metrics, timing_raw)
+                reward_extra_infos_dict = dict()
+                for key in reward_extra_keys:
+                    reward_extra_infos_dict[key] = batch.non_tensor_batch[key].tolist()                
                 self._log_rollout(batch, reward_extra_infos_dict, timing_raw)
                 self._check_save_checkpoint(False, timing_raw)
 

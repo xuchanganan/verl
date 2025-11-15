@@ -337,25 +337,6 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
         return batch
 
     def _process_batch_common(self, batch, metrics, timing_raw):
-        with marked_timer("reward", timing_raw, color="yellow"):
-            # compute reward model score
-            if self.use_rm:
-                reward_tensor = self.rm_wg.compute_rm_score(batch)
-                batch = batch.union(reward_tensor)
-
-            if self.config.reward_model.launch_reward_fn_async:
-                future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
-            else:
-                reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-                if "status" in reward_extra_infos_dict:
-                    status_array = np.array(reward_extra_infos_dict["status"])
-                    is_valid_np = (status_array != "invalid")  # 注意这里是 !=
-                    is_valid_tensor = torch.from_numpy(is_valid_np).to(batch.batch["response_mask"].device)
-                    is_valid_tensor_reshaped = is_valid_tensor.unsqueeze(-1)
-                    batch.batch["response_mask"] *= is_valid_tensor_reshaped  
-                    print(f"mask掉{np.sum(~is_valid_np)}条invalid轨迹")
-
         # recompute old_log_probs
         with marked_timer("old_log_prob", timing_raw, color="blue"):
             async_training = self.config.get("async_training", None)
@@ -396,15 +377,6 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
                 batch = batch.union(values)
 
         with marked_timer("adv", timing_raw, color="brown"):
-            # we combine with rule-based rm
-            reward_extra_infos_dict: dict[str, list]
-            if self.config.reward_model.launch_reward_fn_async:
-                reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
-            batch.batch["token_level_scores"] = reward_tensor
-
-            if reward_extra_infos_dict:
-                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
             # compute rewards. apply_kl_penalty if available
             if self.config.algorithm.use_kl_in_reward:
                 batch, kl_metrics = apply_kl_penalty(
@@ -445,7 +417,7 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
                 actor_output = self.actor_rollout_wg.update_actor(batch)
             actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
             metrics.update(actor_output_metrics)
-        return batch, reward_extra_infos_dict
+        return batch, None
 
     def _log_rollout(self, batch, reward_extra_infos_dict, timing_raw):
         # Log rollout generations if enabled
