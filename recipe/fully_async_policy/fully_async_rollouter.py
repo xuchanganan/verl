@@ -587,8 +587,14 @@ class FullyAsyncRollouter(FullyAsyncRayPPOTrainer):
             filter_num = self.message_queue_client.get_request_sync()
             if filter_num is not None:
                 # 非空的话, 需要更新staleness样本数.
-                print(f"[dapo]rollouter收到样本过滤请求, 当前样本数: {self.staleness_samples}, 需过滤样本数: {filter_num}")
-                self.staleness_samples -= filter_num
+                ## fixme: 这里有点儿缺陷.
+                if self.staleness_samples >= self.max_required_samples:
+                    # 防止新补充的数据, 不够一个batch, 直接补充一个batch的数据.
+                    final_filter_num = self.required_samples
+                else:
+                    final_filter_num = filter_num
+                print(f"[dapo]rollouter收到样本过滤请求, 当前样本数: {self.staleness_samples}, 需过滤样本数: {filter_num}, 考虑到batch情况, 真实过滤样本数: {final_filter_num}, 过滤后样本数: {self.staleness_samples - final_filter_num}")
+                self.staleness_samples -= final_filter_num
         
         if self.staleness_samples >= self.max_required_samples:
             if not self.paused:
