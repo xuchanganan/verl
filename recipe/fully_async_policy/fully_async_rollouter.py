@@ -298,6 +298,8 @@ class FullyAsyncRollouter(FullyAsyncRayPPOTrainer):
             full_batch = prepare_single_generation_data(
                 batch_dict, self.global_steps, self.config.actor_rollout_ref.rollout.n
             )
+            if self.config.actor_rollout_ref.rollout.agent.agent_loop_config_path is not None:
+                print("agent name:", full_batch.non_tensor_batch["agent_name"])
 
             sample_id = f"sample_{epoch}_{self.global_steps}"
 
