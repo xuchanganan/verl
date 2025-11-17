@@ -19,7 +19,7 @@ from typing import Any, Optional
 import hydra
 import numpy as np
 import ray
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from recipe.fully_async_policy.vllm_rollout.vllm_async_server import FullyAsyncvLLMReplica
 from verl.experimental.agent_loop.agent_loop import (
@@ -131,6 +131,12 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
         agent_name: str,
         **kwargs,
     ) -> AgentLoopOutput:
+        agent_loop_config_path = self.config.actor_rollout_ref.rollout.agent.agent_loop_config_path
+        if agent_loop_config_path:
+            agent_loop_configs = OmegaConf.load(agent_loop_config_path)
+            for agent_loop_config in agent_loop_configs:
+                _agent_loop_registry[agent_loop_config.name] = agent_loop_config
+        
         with rollout_trace_attr(
             step=trajectory["step"],
             sample_index=trajectory["sample_index"],
