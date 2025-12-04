@@ -452,6 +452,11 @@ class AgentLoopWorker:
         outputs = await asyncio.gather(*tasks)
 
         output = self._postprocess(outputs)
+        # 存储一下数据.
+        train_data_dir = self.config.trainer.get("train_data_dir", None)
+        if train_data_dir:
+            global_steps = batch.meta_info.get("global_steps", -1)
+            output.save_to_disk(os.path.join(train_data_dir, f"train_rollout_{global_steps}"))
         return output
 
     async def _run_agent_loop(
