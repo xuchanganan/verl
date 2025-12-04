@@ -455,6 +455,7 @@ class AgentLoopWorker:
         # 存储一下数据.
         train_data_dir = self.config.trainer.get("train_data_dir", None)
         if train_data_dir:
+            os.makedirs(train_data_dir, exist_ok=True)
             global_steps = batch.meta_info.get("global_steps", -1)
             output.save_to_disk(os.path.join(train_data_dir, f"train_rollout_{global_steps}"))
         return output
