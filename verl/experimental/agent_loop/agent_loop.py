@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import uuid
 import asyncio
 import heapq
 import logging
@@ -363,12 +364,6 @@ class AgentLoopWorkerBase:
         outputs = await asyncio.gather(*tasks)
 
         output = self._postprocess(outputs)
-        # 存储一下数据.
-        train_data_dir = self.config.trainer.get("train_data_dir", None)
-        if train_data_dir:
-            os.makedirs(train_data_dir, exist_ok=True)
-            global_steps = batch.meta_info.get("global_steps", -1)
-            output.save_to_disk(os.path.join(train_data_dir, f"train_rollout_{global_steps}"))
         return output
 
     async def _run_agent_loop(
@@ -785,6 +780,13 @@ class AgentLoopManager:
         timing = self._performance_metrics(metrics, output)
 
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
+
+        # 存储一下rollout的结果.
+        train_data_dir = self.config.trainer.get("train_data_dir", None)
+        if train_data_dir:
+            os.makedirs(train_data_dir, exist_ok=True)
+            global_steps = prompts.meta_info.get("global_steps", -1)
+            output.save_to_disk(os.path.join(train_data_dir, f"train_rollout_{global_steps}_{uuid.uuid4().hex[:8]}"))
         return output
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
