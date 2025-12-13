@@ -922,12 +922,19 @@ class RayPPOTrainer:
         Get the trajectory mask for the batch.
         """
         with torch.no_grad():
+            # cal trajectory_mask
             status_array = batch.non_tensor_batch["status"]
             is_invalid_np = (status_array == "invalid")
             device = batch.batch["attention_mask"].device
             trajectory_mask = torch.from_numpy(~is_invalid_np).to(device=device, dtype=torch.float32)
-
             trajectory_mask = trajectory_mask.unsqueeze(-1) * batch.batch["response_mask"]
+
+            # Count valid and invalid trajectories for logging
+            invalid_trajectories = is_invalid_np.sum().item()
+            valid_trajectories = (status_array == "valid").sum().item()
+            if invalid_trajectories > 0:
+                print(f"排除了 {invalid_trajectories} 个 status 为 invalid 的轨迹, 保留了 {valid_trajectories} 个 status 为 valid 的轨迹")
+
             return trajectory_mask
 
     def fit(self):
