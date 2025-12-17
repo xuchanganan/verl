@@ -953,6 +953,19 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
+    def get_trajectory_mask(self, batch: DataProto):
+        """
+        Get the trajectory mask for the batch.
+        """
+        with torch.no_grad():
+            status_array = batch.non_tensor_batch["status"]
+            is_invalid_np = (status_array == "invalid")
+            device = batch.batch["attention_mask"].device
+            trajectory_mask = torch.from_numpy(~is_invalid_np).to(device=device, dtype=torch.float32)
+
+            trajectory_mask = trajectory_mask.unsqueeze(-1) * batch.batch["response_mask"]
+            return trajectory_mask
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1078,6 +1091,10 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    if "status" in batch.non_tensor_batch:
+                        # 二次过滤.
+                        trajectory_mask = self.get_trajectory_mask(batch)
+                        batch.batch["response_mask"] = batch.batch["response_mask"] * trajectory_mask
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
