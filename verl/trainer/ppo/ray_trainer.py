@@ -1097,10 +1097,6 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
-                    if "status" in batch.non_tensor_batch:
-                        # 二次过滤.
-                        trajectory_mask = self.get_trajectory_mask(batch)
-                        batch.batch["response_mask"] = batch.batch["response_mask"] * trajectory_mask
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
@@ -1168,6 +1164,11 @@ class RayPPOTrainer:
                                 ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
+                    # 过滤掉invalid的trajectory.
+                    if "status" in batch.non_tensor_batch:
+                        # 二次过滤.
+                        trajectory_mask = self.get_trajectory_mask(batch)
+                        batch.batch["response_mask"] = batch.batch["response_mask"] * trajectory_mask
                     # compute values
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
