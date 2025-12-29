@@ -221,8 +221,9 @@ def compute_rs_metrics(
     Returns:
         Dictionary of rejection sampling metrics (all scalars).
     """
+    print(f"[compute_rs_metrics]response_mask shape {response_mask.shape}")
     if not response_mask.any():
-        raise ValueError("response_mask must contain at least one valid token (1).")
+        raise ValueError(f"response_mask must contain at least one valid token (1). response_mask shape {response_mask.shape}")
 
     metrics: dict[str, float] = {}
     device: torch.device = rollout_is_weights.device
