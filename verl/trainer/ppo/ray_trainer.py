@@ -1164,11 +1164,6 @@ class RayPPOTrainer:
                                 ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
-                    # 过滤掉invalid的trajectory.
-                    if "status" in batch.non_tensor_batch:
-                        # 二次过滤.
-                        trajectory_mask = self.get_trajectory_mask(batch)
-                        batch.batch["response_mask"] = batch.batch["response_mask"] * trajectory_mask
                     # compute values
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
@@ -1223,6 +1218,12 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+
+                    # mask处理, 在模型更新前, 过滤掉invalid的trajectory.
+                    if "status" in batch.non_tensor_batch:
+                        # 二次过滤.
+                        trajectory_mask = self.get_trajectory_mask(batch)
+                        batch.batch["response_mask"] = batch.batch["response_mask"] * trajectory_mask
 
                     # update critic
                     if self.use_critic:
