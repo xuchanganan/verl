@@ -453,8 +453,9 @@ def compute_is_metrics(
     Returns:
         Dictionary of IS weight metrics (all scalars).
     """
+    print(f"[compute_is_metrics]response_mask shape {response_mask.shape}")
     if not response_mask.any():
-        raise ValueError("response_mask must contain at least one valid token (1).")
+        raise ValueError(f"response_mask must contain at least one valid token (1). response_mask shape {response_mask.shape}")
 
     metrics: dict[str, float] = {}
     device: torch.device = rollout_is_weights.device
@@ -601,8 +602,9 @@ def compute_rollout_correction_and_rejection_mask(
                 - Policy mismatch metrics (KL, PPL, etc.)
     """
     # Validate input masks
+    print(f"[compute_rollout_correction_and_rejection_mask]response_mask shape {response_mask.shape}")
     if not response_mask.any():
-        raise ValueError("response_mask must contain at least one valid token (1).")
+        raise ValueError(f"response_mask must contain at least one valid token (1). response_mask shape {response_mask.shape}")
     if old_log_prob.shape != rollout_log_prob.shape:
         raise ValueError(
             f"old_log_prob shape {old_log_prob.shape} does not match rollout_log_prob shape {rollout_log_prob.shape}."
@@ -733,7 +735,8 @@ def compute_offpolicy_metrics(
         Dictionary of off-policy metrics (without prefix)
     """
     # Validate that we have at least one valid token
-    assert response_mask.any(), "Expected at least one valid token in response_mask"
+    print(f"[compute_offpolicy_metrics]response_mask shape {response_mask.shape}")
+    assert response_mask.any(), f"Expected at least one valid token in response_mask, response_mask shape {response_mask.shape}"
 
     metrics = {}
 
