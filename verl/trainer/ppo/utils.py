@@ -84,6 +84,11 @@ def need_reward_model(
     """Given a role worker mapping, do we need reward model."""
     return Role.RewardModel in role_worker_mapping
 
+def need_teacher_model(
+    role_worker_mapping: dict[Role, WorkerType],
+) -> bool:
+    """Given a role worker mapping, do we need teacher model."""
+    return Role.TeacherModel in role_worker_mapping
 
 def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic."""

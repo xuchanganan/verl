@@ -1306,3 +1306,7 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
         output = self.rm.compute_reward(data)
         output = output.to("cpu")
         return output
+
+
+class TeacherModelWorker(ActorRolloutRefWorker):
+    pass

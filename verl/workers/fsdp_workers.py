@@ -1959,3 +1959,7 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     ) -> list[int]:
         ret = await self.rollout.generate(prompt_ids, sampling_params, request_id, image_data=image_data)
         return ret
+
+
+class TeacherModelWorker(ActorRolloutRefWorker):
+    pass
