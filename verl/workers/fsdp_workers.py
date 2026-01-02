@@ -1983,7 +1983,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
         # TODO(sgm): support FSDP hybrid shard for larger model
-        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.model.fsdp_config.fsdp_size)
+        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.fsdp_config.fsdp_size)
 
         # build device mesh for Ulysses Sequence Parallel
         self.ulysses_device_mesh = None
@@ -2022,7 +2022,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         )
 
         self._is_offload_optimizer = False
-        self._is_offload_param = self.config.model.fsdp_config.get("param_offload", False)
+        self._is_offload_param = self.config.fsdp_config.get("param_offload", False)
 
         # normalize teacher model config
         if self.config.log_prob_micro_batch_size is not None:
@@ -2284,7 +2284,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         local_path = copy_to_local(teacher_model_path, use_shm=use_shm)
         self.teacher_module_fsdp = self._build_model_optimizer(
             model_path=local_path,
-            fsdp_config=omega_conf_to_dataclass(self.config.model.fsdp_config),
+            fsdp_config=omega_conf_to_dataclass(self.config.fsdp_config),
             optim_config=None,
             override_model_config=override_model_config,
             use_remove_padding=use_remove_padding,
