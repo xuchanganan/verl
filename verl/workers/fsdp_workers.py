@@ -2025,9 +2025,9 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         self._is_offload_param = self.config.model.fsdp_config.get("param_offload", False)
 
         # normalize teacher model config
-        if self.config.model.log_prob_micro_batch_size is not None:
-            self.config.model.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
-            self.config.model.log_prob_micro_batch_size_per_gpu = self.config.model.log_prob_micro_batch_size
+        if self.config.log_prob_micro_batch_size is not None:
+            self.config.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
+            self.config.log_prob_micro_batch_size_per_gpu = self.config.log_prob_micro_batch_size
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
