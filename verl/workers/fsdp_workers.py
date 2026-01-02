@@ -2297,7 +2297,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         with open_dict(self.config):
             self.config.model.use_remove_padding = use_remove_padding
             self.config.model.use_fused_kernels = use_fused_kernels
-        self.teacher_model_policy = DataParallelPPOActor(config=self.config.model, actor_module=self.teacher_module_fsdp)
+        self.teacher_model_policy = DataParallelPPOActor(config=self.config, actor_module=self.teacher_module_fsdp)
 
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
