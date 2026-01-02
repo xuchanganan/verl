@@ -2310,9 +2310,6 @@ class TeacherModelWorker(ActorRolloutRefWorker):
             # this old_log_probs is in fact teacher_log_prob
             data = DataProto.from_dict(tensors={"teacher_log_prob": data.batch["old_log_probs"]})
             return data
-        assert self._is_ref
-        # else:
-        # otherwise, the class have a standalone ref model
 
         micro_batch_size = self.config.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
