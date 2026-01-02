@@ -1962,4 +1962,143 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
 
 
 class TeacherModelWorker(ActorRolloutRefWorker):
-    pass
+    def __init__(self, config: DictConfig, **kwargs):
+        Worker.__init__(self)
+
+        self.config = config
+        import torch.distributed
+
+        if not torch.distributed.is_initialized():
+            rank = int(os.environ.get("RANK", 0))
+            world_size = int(os.environ.get("WORLD_SIZE", 1))
+            torch.distributed.init_process_group(
+                backend=f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}",
+                rank=rank,
+                world_size=world_size,
+                timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)),
+                init_method=os.environ.get("DIST_INIT_METHOD", None),
+            )
+
+        # build device mesh for FSDP
+        world_size = torch.distributed.get_world_size()
+        # TODO(sgm): support FSDP hybrid shard for larger model
+        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.actor.fsdp_config.fsdp_size)
+
+        # build device mesh for Ulysses Sequence Parallel
+        self.ulysses_device_mesh = None
+        self.ulysses_sequence_parallel_size = self.config.actor.get("ulysses_sequence_parallel_size", 1)
+        dp = world_size // self.ulysses_sequence_parallel_size
+        if self.ulysses_sequence_parallel_size > 1:
+            self.ulysses_device_mesh = init_device_mesh(
+                device_name, mesh_shape=(dp, self.ulysses_sequence_parallel_size), mesh_dim_names=["dp", "sp"]
+            )
+
+        # create training dispatch
+        if self.ulysses_device_mesh is not None:
+            is_collect = self.ulysses_device_mesh["sp"].get_local_rank() == 0
+            self._register_dispatch_collect_info(
+                "actor", dp_rank=self.ulysses_device_mesh["dp"].get_local_rank(), is_collect=is_collect
+            )
+        else:
+            self._register_dispatch_collect_info("actor", dp_rank=self.rank, is_collect=True)
+
+        self.ulysses_sharding_manager = FSDPUlyssesShardingManager(self.ulysses_device_mesh)
+        self._lora_rank = self.config.model.get("lora_rank", 0)
+        self._is_lora = self.config.model.get("lora_adapter_path") is not None or self._lora_rank > 0
+
+        omega_profiler_config = config.teacher_model.get("profiler", {})
+        # omega_profiler_config is DictConfig
+        # profiler_config is a ProfilerConfig dataclass
+        profiler_config = omega_conf_to_dataclass(omega_profiler_config, dataclass_type=ProfilerConfig)
+        if omega_profiler_config.get("tool", None) in ["npu", "nsys", "torch", "torch_memory"]:
+            tool_config = omega_conf_to_dataclass(
+                omega_profiler_config.get("tool_config", {}).get(omega_profiler_config.get("tool"))
+            )
+        else:
+            tool_config = None
+        DistProfilerExtension.__init__(
+            self, DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config)
+        )
+
+        self._is_offload_optimizer = False
+        self._is_offload_param = self.config.teacher_model.fsdp_config.get("param_offload", False)
+
+        # normalize teacher model config
+        if self.config.teacher_model.log_prob_micro_batch_size is not None:
+            self.config.teacher_model.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
+            self.config.teacher_model.log_prob_micro_batch_size_per_gpu = self.config.teacher_model.log_prob_micro_batch_size
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self):
+        from verl.workers.actor import DataParallelPPOActor
+
+        # This is used to import external_lib into the huggingface systems
+        import_external_libs(self.config.model.get("external_lib", None))
+
+        override_model_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
+        use_remove_padding = self.config.model.get("use_remove_padding", False)
+        use_shm = self.config.model.get("use_shm", False)
+        use_fused_kernels = self.config.model.get("use_fused_kernels", False)
+
+        if self._is_teacher_model:
+            teacher_model_path = self.config.teacher_model.model.path
+            teacher_model = self.config.teacher_model.get("model", None)
+            if teacher_model is not None:
+                teacher_model_path = teacher_model.get("path", self.config.teacher_model.model.path)
+            
+            if self.rank == 0:
+                print("teacher model:", teacher_model_path)
+            local_path = copy_to_local(teacher_model_path, use_shm=use_shm)
+            self.teacher_module_fsdp = self._build_model_optimizer(
+                model_path=local_path,
+                fsdp_config=omega_conf_to_dataclass(self.config.teacher_model.fsdp_config),
+                optim_config=None,
+                override_model_config=override_model_config,
+                use_remove_padding=use_remove_padding,
+                use_fused_kernels=use_fused_kernels,
+                trust_remote_code=self.config.model.get("trust_remote_code", False),
+                use_liger=self.config.model.get("use_liger", False),
+                role="teacher_model",
+            )[0]
+            OmegaConf.set_struct(self.config.teacher_model, True)
+            with open_dict(self.config.teacher_model):
+                self.config.teacher_model.use_remove_padding = use_remove_padding
+                self.config.teacher_model.use_fused_kernels = use_fused_kernels
+            self.teacher_model_policy = DataParallelPPOActor(config=self.config.teacher_model, actor_module=self.teacher_module_fsdp)
+
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="olive", role="teacher_compute_log_prob")
+    def compute_teacher_log_prob(self, data: DataProto):
+        if self._is_lora:
+            # if _is_lora, actor without lora applied is the teacher_model
+            data.meta_info["is_lora"] = True
+            data = self.compute_log_prob(data)
+            # this old_log_probs is in fact teacher_log_prob
+            data = DataProto.from_dict(tensors={"teacher_log_prob": data.batch["old_log_probs"]})
+            return data
+        assert self._is_ref
+        # else:
+        # otherwise, the class have a standalone ref model
+
+        micro_batch_size = self.config.teacher_model.log_prob_micro_batch_size_per_gpu
+        data.meta_info["micro_batch_size"] = micro_batch_size
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.teacher_model.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.teacher_model.log_prob_use_dynamic_bsz
+        with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
+            output, _ = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False)
+            output = DataProto.from_dict(tensors={"teacher_log_prob": output})
+
+        output = output.to("cpu")
+
+        # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
+        # unshard the root FSDP module
+        if self.world_size > 1:
+            if fsdp_version(self.teacher_model_policy.actor_module) == 1:
+                self.teacher_model_policy.actor_module._handle.reshard(True)
+            elif fsdp_version(self.teacher_model_policy.actor_module) == 2:
+                self.teacher_model_policy.actor_module.reshard()
+
+        return output
