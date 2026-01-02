@@ -1963,6 +1963,7 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
 
 class TeacherModelWorker(ActorRolloutRefWorker):
     def __init__(self, config: DictConfig, **kwargs):
+        # 这里的config是在teacher_model下的.
         Worker.__init__(self)
 
         self.config = config
@@ -1982,11 +1983,11 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
         # TODO(sgm): support FSDP hybrid shard for larger model
-        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.actor.fsdp_config.fsdp_size)
+        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.model.fsdp_config.fsdp_size)
 
         # build device mesh for Ulysses Sequence Parallel
         self.ulysses_device_mesh = None
-        self.ulysses_sequence_parallel_size = self.config.actor.get("ulysses_sequence_parallel_size", 1)
+        self.ulysses_sequence_parallel_size = self.config.get("ulysses_sequence_parallel_size", 1)
         dp = world_size // self.ulysses_sequence_parallel_size
         if self.ulysses_sequence_parallel_size > 1:
             self.ulysses_device_mesh = init_device_mesh(
@@ -2021,12 +2022,12 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         )
 
         self._is_offload_optimizer = False
-        self._is_offload_param = self.config.teacher_model.fsdp_config.get("param_offload", False)
+        self._is_offload_param = self.config.model.fsdp_config.get("param_offload", False)
 
         # normalize teacher model config
-        if self.config.teacher_model.log_prob_micro_batch_size is not None:
-            self.config.teacher_model.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
-            self.config.teacher_model.log_prob_micro_batch_size_per_gpu = self.config.teacher_model.log_prob_micro_batch_size
+        if self.config.model.log_prob_micro_batch_size is not None:
+            self.config.model.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
+            self.config.model.log_prob_micro_batch_size_per_gpu = self.config.model.log_prob_micro_batch_size
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
@@ -2040,31 +2041,30 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         use_shm = self.config.model.get("use_shm", False)
         use_fused_kernels = self.config.model.get("use_fused_kernels", False)
 
-        if self._is_teacher_model:
-            teacher_model_path = self.config.teacher_model.model.path
-            teacher_model = self.config.teacher_model.get("model", None)
-            if teacher_model is not None:
-                teacher_model_path = teacher_model.get("path", self.config.teacher_model.model.path)
-            
-            if self.rank == 0:
-                print("teacher model:", teacher_model_path)
-            local_path = copy_to_local(teacher_model_path, use_shm=use_shm)
-            self.teacher_module_fsdp = self._build_model_optimizer(
-                model_path=local_path,
-                fsdp_config=omega_conf_to_dataclass(self.config.teacher_model.fsdp_config),
-                optim_config=None,
-                override_model_config=override_model_config,
-                use_remove_padding=use_remove_padding,
-                use_fused_kernels=use_fused_kernels,
-                trust_remote_code=self.config.model.get("trust_remote_code", False),
-                use_liger=self.config.model.get("use_liger", False),
-                role="teacher_model",
-            )[0]
-            OmegaConf.set_struct(self.config.teacher_model, True)
-            with open_dict(self.config.teacher_model):
-                self.config.teacher_model.use_remove_padding = use_remove_padding
-                self.config.teacher_model.use_fused_kernels = use_fused_kernels
-            self.teacher_model_policy = DataParallelPPOActor(config=self.config.teacher_model, actor_module=self.teacher_module_fsdp)
+        teacher_model_path = self.config.model.path
+        teacher_model = self.config.get("model", None)
+        if teacher_model is not None:
+            teacher_model_path = teacher_model.get("path", self.config.model.path)
+        
+        if self.rank == 0:
+            print("teacher model:", teacher_model_path)
+        local_path = copy_to_local(teacher_model_path, use_shm=use_shm)
+        self.teacher_module_fsdp = self._build_model_optimizer(
+            model_path=local_path,
+            fsdp_config=omega_conf_to_dataclass(self.config.model.fsdp_config),
+            optim_config=None,
+            override_model_config=override_model_config,
+            use_remove_padding=use_remove_padding,
+            use_fused_kernels=use_fused_kernels,
+            trust_remote_code=self.config.model.get("trust_remote_code", False),
+            use_liger=self.config.model.get("use_liger", False),
+            role="teacher_model",
+        )[0]
+        OmegaConf.set_struct(self.config.model, True)
+        with open_dict(self.config.teacher_model):
+            self.config.model.use_remove_padding = use_remove_padding
+            self.config.model.use_fused_kernels = use_fused_kernels
+        self.teacher_model_policy = DataParallelPPOActor(config=self.config.model, actor_module=self.teacher_module_fsdp)
 
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
@@ -2081,11 +2081,11 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         # else:
         # otherwise, the class have a standalone ref model
 
-        micro_batch_size = self.config.teacher_model.log_prob_micro_batch_size_per_gpu
+        micro_batch_size = self.config.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        data.meta_info["max_token_len"] = self.config.teacher_model.log_prob_max_token_len_per_gpu
-        data.meta_info["use_dynamic_bsz"] = self.config.teacher_model.log_prob_use_dynamic_bsz
+        # data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, _ = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False)
