@@ -2007,7 +2007,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         self._lora_rank = self.config.model.get("lora_rank", 0)
         self._is_lora = self.config.model.get("lora_adapter_path") is not None or self._lora_rank > 0
 
-        omega_profiler_config = config.teacher_model.get("profiler", {})
+        omega_profiler_config = config.get("profiler", {})
         # omega_profiler_config is DictConfig
         # profiler_config is a ProfilerConfig dataclass
         profiler_config = omega_conf_to_dataclass(omega_profiler_config, dataclass_type=ProfilerConfig)
@@ -2061,7 +2061,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
             role="teacher_model",
         )[0]
         OmegaConf.set_struct(self.config.model, True)
-        with open_dict(self.config.teacher_model):
+        with open_dict(self.config):
             self.config.model.use_remove_padding = use_remove_padding
             self.config.model.use_fused_kernels = use_fused_kernels
         self.teacher_model_policy = DataParallelPPOActor(config=self.config.model, actor_module=self.teacher_module_fsdp)
