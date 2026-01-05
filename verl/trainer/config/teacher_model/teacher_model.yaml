@@ -1,5 +1,10 @@
 # configs for the teacher model
 
+# kl 配置.
+kl_config:
+  kl_penalty_coef: 1.0
+  kl_discount_factor: 0.0
+
 # Whether to enable teacher model.
 enable: False
 enable_resource_pool: False
