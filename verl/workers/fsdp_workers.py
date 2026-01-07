@@ -1013,6 +1013,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+        logger.debug("role: ref, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
@@ -2316,7 +2317,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         # data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
-        print("teacher_max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
+        logger.debug("role: teacher, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, _ = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False)
