@@ -884,6 +884,34 @@ def compute_policy_loss(
     return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
 
 
+@register_policy_loss("importance_sampling")
+def compute_policy_loss_importance_sampling(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | AlgoConfig] = None,
+    rollout_is_weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """
+    Compute policy loss with importance sampling.
+    """
+    negative_approx_kl = log_prob - old_log_prob
+    ratio = torch.exp(negative_approx_kl)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_losses = -advantages * ratio
+
+    assert loss_agg_mode in ["token-mean"], "if you use importance sampling, you must use token-mean aggregation mode."
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_model=loss_agg_mode)
+
+    pg_metrics = {
+        "actor/ppo_kl": ppo_kl.detach().item(),
+    }
+    return pg_loss, pg_metrics
+
+
 @register_policy_loss("vanilla")  # type: ignore[arg-type]
 def compute_policy_loss_vanilla(
     old_log_prob: torch.Tensor,
