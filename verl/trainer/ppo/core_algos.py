@@ -902,6 +902,8 @@ def compute_policy_loss_importance_sampling(
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
 
     pg_losses = -advantages * ratio
+    if rollout_is_weights is not None:
+        pg_losses = pg_losses * rollout_is_weights
 
     assert loss_agg_mode in ["token-mean"], "if you use importance sampling, you must use token-mean aggregation mode."
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_model=loss_agg_mode)
