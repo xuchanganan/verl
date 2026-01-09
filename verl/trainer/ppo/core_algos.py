@@ -802,6 +802,8 @@ def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str
         # throughout training to well-replicate the DrGRPO paper.
         # TODO: Perhaps add user-defined normalizer argument to
         # agg_loss to ensure divisor stays constant throughout.
+    elif loss_agg_mode == "sum":
+        loss = torch.sum(loss_mat * loss_mask)
     else:
         raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
 
