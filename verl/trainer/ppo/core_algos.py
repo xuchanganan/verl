@@ -905,7 +905,7 @@ def compute_policy_loss_importance_sampling(
     if rollout_is_weights is not None:
         pg_losses = pg_losses * rollout_is_weights
 
-    assert loss_agg_mode in ["token-mean"], "if you use importance sampling, you must use token-mean aggregation mode."
+    # 如果是online policy distill, loss_agg_model=token-mean, 可能被长度hack吧;
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
     pg_metrics = {
