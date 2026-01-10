@@ -297,6 +297,8 @@ class DataParallelPPOActor(BasePPOActor):
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
                     if get_logits:
                         full_logits = logits
+                    else:
+                        full_logits = None
 
             return entropy, log_probs, full_logits
 
