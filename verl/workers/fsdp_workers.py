@@ -955,7 +955,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
-    def compute_log_prob(self, data: DataProto, get_logits: bool = False):
+    def compute_log_prob(self, data: DataProto):
         # when is_lora is True, we use the actor without lora applied to calculate the log_prob
         # which is mostly used for ref log_prob calculation
         assert self._is_actor
@@ -973,6 +973,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["use_dynamic_bsz"] = self.config.rollout.log_prob_use_dynamic_bsz
         data.meta_info["temperature"] = self.config.rollout.temperature
         # perform recompute log_prob
+        get_logits = data.meta_info.pop("get_logits", False)
         with self.ulysses_sharding_manager:
             with adapter_ctx:
                 output, entropys, full_logits = self.actor.compute_log_prob(data=data, calculate_entropy=True, get_logits=get_logits)
@@ -2307,7 +2308,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="teacher_compute_log_prob")
-    def compute_teacher_log_prob(self, data: DataProto, get_logits=False):
+    def compute_teacher_log_prob(self, data: DataProto):
         # if self._is_lora:
         #     # if _is_lora, actor without lora applied is the teacher_model
         #     data.meta_info["is_lora"] = True
@@ -2322,6 +2323,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         data.meta_info["max_token_len"] = self.config.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
         logger.debug("role: teacher, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
+        get_logits = data.meta_info.pop("get_logits", False)
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, entropys, full_logits = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits)
