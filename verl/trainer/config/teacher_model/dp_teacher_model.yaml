@@ -17,6 +17,9 @@ defaults:
 
 strategy: fsdp
 
+rollout:
+  temperature: ${actor_rollout_ref.rollout.temperature}
+
 model:
 
   # Whether to use shared memory for loading the model

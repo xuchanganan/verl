@@ -955,7 +955,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
-    def compute_log_prob(self, data: DataProto):
+    def compute_log_prob(self, data: DataProto, get_logits: bool = False):
         # when is_lora is True, we use the actor without lora applied to calculate the log_prob
         # which is mostly used for ref log_prob calculation
         assert self._is_actor
@@ -975,9 +975,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             with adapter_ctx:
-                output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=True)
+                output, entropys, full_logits = self.actor.compute_log_prob(data=data, calculate_entropy=True, get_logits=get_logits)
+            # teacher_full_logits
+            tensors={"old_log_probs": output, "entropys": entropys}
+            if get_logits:
+                tensors.update({"actor_full_logits": full_logits})
             output = DataProto.from_dict(
-                tensors={"old_log_probs": output, "entropys": entropys},
+                tensors=tensors,
                 meta_info={"temperature": self.config.rollout.temperature},
             )
 
@@ -1016,7 +1020,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         logger.debug("role: ref, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
+            output, _, full_logits = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=False)
             output = DataProto.from_dict(tensors={"ref_log_prob": output})
 
         output = output.to("cpu")
@@ -2303,25 +2307,28 @@ class TeacherModelWorker(ActorRolloutRefWorker):
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="teacher_compute_log_prob")
-    def compute_teacher_log_prob(self, data: DataProto):
-        if self._is_lora:
-            # if _is_lora, actor without lora applied is the teacher_model
-            data.meta_info["is_lora"] = True
-            data = self.compute_log_prob(data)
-            # this old_log_probs is in fact teacher_log_prob
-            data = DataProto.from_dict(tensors={"teacher_log_prob": data.batch["old_log_probs"]})
-            return data
+    def compute_teacher_log_prob(self, data: DataProto, get_logits=False):
+        # if self._is_lora:
+        #     # if _is_lora, actor without lora applied is the teacher_model
+        #     data.meta_info["is_lora"] = True
+        #     data = self.compute_log_prob(data)
+        #     # this old_log_probs is in fact teacher_log_prob
+        #     data = DataProto.from_dict(tensors={"teacher_log_prob": data.batch["old_log_probs"]})
+        #     return data
 
         micro_batch_size = self.config.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
-        # data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
         logger.debug("role: teacher, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, _ = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"teacher_log_prob": output})
+            output, entropys, full_logits = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits)
+            if get_logits:
+                output = DataProto.from_dict(tensors={"teacher_log_prob": output, "teacher_full_logits": full_logits})
+            else:
+                output = DataProto.from_dict(tensors={"teacher_log_prob": output})
 
         output = output.to("cpu")
 
