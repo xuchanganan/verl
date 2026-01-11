@@ -2349,9 +2349,10 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
         logger.debug("role: teacher, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         get_logits = data.meta_info.pop("get_logits", False)
+        top_k = data.meta_info.pop("top_k", 100)
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, entropys, top_k_logits, top_k_indices = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits)
+            output, entropys, top_k_logits, top_k_indices = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits, top_k=top_k)
             if get_logits:
                 output = DataProto.from_dict(tensors={"teacher_log_prob": output, "teacher_topk_logits": top_k_logits, "teacher_topk_indices": top_k_indices})
             else:

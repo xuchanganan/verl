@@ -486,7 +486,7 @@ class DataParallelPPOActor(BasePPOActor):
 
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
-    def compute_log_prob(self, data: DataProto, calculate_entropy=False, get_logits=False) -> torch.Tensor:
+    def compute_log_prob(self, data: DataProto, calculate_entropy=False, get_logits=False, top_k=100) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
         Args:
@@ -531,7 +531,7 @@ class DataParallelPPOActor(BasePPOActor):
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
                 entropy, log_probs, top_k_logits, top_k_indices = self._forward_micro_batch(
-                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, get_logits=get_logits,
+                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, get_logits=get_logits, top_k=top_k,
                 )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
