@@ -91,6 +91,114 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             self.scaler = None
 
+    def _gather_indice_logits(
+        self, micro_batch, temperature,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        response_length = micro_batch["responses"].size(-1)
+        multi_modal_inputs = {}
+
+        with torch.autocast(device_type=self.device_name, dtype=self.param_dtype):
+            input_ids = micro_batch["input_ids"]
+            batch_size, seqlen = input_ids.shape
+            attention_mask = micro_batch["attention_mask"]
+            position_ids = micro_batch["position_ids"]
+            if position_ids.dim() == 3:  # qwen2vl mrope
+                position_ids = position_ids.transpose(0, 1)  # (bsz, 4, seqlen) -> (4, bsz, seqlen)
+
+            # (bsz, response_len, top_k)
+            student_topk_indices = micro_batch["student_topk_indices"]
+            # 我们需要 student_topk_indices 的 top_k 维度大小
+            top_k = student_topk_indices.size(-1)
+
+            if self.use_remove_padding:
+                input_ids_rmpad, indices, cu_seqlens, *_ = unpad_input(
+                    input_ids.unsqueeze(-1), attention_mask
+                )  # input_ids_rmpad (total_nnz, ...)
+                input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
+
+                # 将 student_topk_indices 填充回 (Batch, Seqlen, K) 的全尺寸
+                full_student_indices = torch.zeros((batch_size, seqlen, top_k), dtype=student_topk_indices.dtype, device=student_topk_indices.device)
+                # 填入对应位置，其他位置为0（gather时作为dummy index，之后会被slice掉）
+                full_student_indices[:, -response_length - 1 : -1, :] = student_topk_indices
+                # 使用与 input_ids 相同的 indices 进行 unpad, rearrange: (b, s, k) -> (b*s, k)
+                student_indices_rmpad = index_first_axis(rearrange(full_student_indices, "b s k -> (b s) k"), indices)
+
+                # unpad the position_ids to align the rotary
+                if position_ids.dim() == 3:
+                    position_ids_rmpad = (
+                        index_first_axis(rearrange(position_ids, "c b s ... -> (b s) c ..."), indices)
+                        .transpose(0, 1)
+                        .unsqueeze(1)
+                    )  # (4, bsz, seqlen) -> (4, 1, bsz * seqlen)
+                else:
+                    position_ids_rmpad = index_first_axis(
+                        rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."), indices
+                    ).transpose(0, 1)
+
+                # pad and slice the inputs if sp > 1
+                if self.use_ulysses_sp:
+                    input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(
+                        input_ids_rmpad,
+                        position_ids_rmpad=position_ids_rmpad,
+                        sp_size=self.ulysses_sequence_parallel_size,
+                    )
+                    # --- 关键逻辑：同时 Slice student_indices_rmpad ---
+                    # student_indices_rmpad 目前是 (total_nnz, k)                    
+                    # STAGE A: 转置为 (k, total_nnz) 以骗过工具函数，把 k 当作 batch
+                    student_indices_rmpad = student_indices_rmpad.transpose(0, 1)
+                    # STAGE B: 调用工具函数进行 pad 和 slice
+                    # position_ids_rmpad 传 None，因为我们只关心 indices 的切分
+                    student_indices_rmpad, _, _ = ulysses_pad_and_slice_inputs(
+                        student_indices_rmpad,
+                        position_ids_rmpad=None,
+                        sp_size=self.ulysses_sequence_parallel_size,
+                    )
+                    # STAGE C: 转置回 (local_nnz, k) 用于后续 gather
+                    student_indices_rmpad = student_indices_rmpad.transpose(0, 1)
+
+                # only pass input_ids and position_ids to enable flash_attn_varlen
+                extra_args = {}
+                if self.use_fused_kernels:
+                    extra_args["temperature"] = temperature
+                    extra_args["return_dict"] = True
+
+                output = self.actor_module(
+                    input_ids=input_ids_rmpad,
+                    attention_mask=None,
+                    position_ids=position_ids_rmpad,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    **extra_args,
+                )  # prevent model thinks we are generating
+
+                logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
+                logits_rmpad.div_(temperature)
+
+                teacher_topk_logits_rmpad = torch.gather(logits_rmpad, -1, student_indices_rmpad)
+
+                # gather log_prob if sp > 1
+                if self.use_ulysses_sp:
+                    teacher_topk_logits_rmpad = gather_outputs_and_unpad(
+                        teacher_topk_logits_rmpad,
+                        gather_dim=0,
+                        unpad_dim=0,
+                        padding_size=pad_size,
+                    )
+                # # Pad 回 (Batch, Seqlen, TopK)
+                teacher_topk_logits = pad_input(
+                    hidden_states=teacher_topk_logits_rmpad.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                )
+                # (B, S, K, 1) -> (B, S, K) -> slice -> (B, R, K)
+                teacher_topk_logits = teacher_topk_logits.squeeze(-1)[:, -response_length - 1 : -1]
+            else: # not using rmpad and no ulysses sp
+                pass # 暂时不处理.
+
+        return teacher_topk_logits
+
+
     def _forward_micro_batch(
         self, micro_batch, temperature, calculate_entropy=False, get_logits=False, top_k=100,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -344,6 +452,38 @@ class DataParallelPPOActor(BasePPOActor):
             else:
                 self.actor_optimizer.step()
         return grad_norm
+    
+    @GPUMemoryLogger(role="dp actor", logger=logger)
+    def get_student_topk_indices(self, data: DataProto) -> torch.Tensor:
+        # set to eval
+        self.actor_module.eval()
+
+        micro_batch_size = data.meta_info["micro_batch_size"]
+        temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
+        use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
+        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+        select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "student_topk_indices"]
+        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
+
+        data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+
+        if use_dynamic_bsz:
+            max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
+            micro_batches, batch_idx_list = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(micro_batch_size)
+
+        teacher_topk_logits_lst = []
+        for micro_batch in micro_batches:
+            micro_batch = micro_batch.to(get_device_id())
+            model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+            with torch.no_grad():
+                teacher_topk_logits = self._gather_indice_logits(model_inputs, temperature=temperature)
+            teacher_topk_logits_lst.append(teacher_topk_logits)
+
+        teacher_topk_logits = torch.concat(teacher_topk_logits_lst, dim=0)
+        return teacher_topk_logits
+
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def compute_log_prob(self, data: DataProto, calculate_entropy=False, get_logits=False) -> torch.Tensor:

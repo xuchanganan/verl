@@ -2305,6 +2305,31 @@ class TeacherModelWorker(ActorRolloutRefWorker):
             self.config.model.use_fused_kernels = use_fused_kernels
         self.teacher_model_policy = DataParallelPPOActor(config=self.config, actor_module=self.teacher_module_fsdp)
 
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="olive", role="compute_teacher_logits")
+    def compute_teacher_logits(self, data: DataProto):
+        micro_batch_size = self.config.log_prob_micro_batch_size_per_gpu
+        data.meta_info["micro_batch_size"] = micro_batch_size
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.log_prob_use_dynamic_bsz
+
+        with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
+            teacher_topk_logits = self.teacher_model_policy.get_student_topk_indices(data=data)
+            output = DataProto.from_dict(tensor={"teacher_topk_logits": teacher_topk_logits})
+        
+        output = output.to("cpu")
+
+        # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
+        # unshard the root FSDP module
+        if self.world_size > 1:
+            if fsdp_version(self.teacher_model_policy.actor_module) == 1:
+                self.teacher_model_policy.actor_module._handle.reshard(True)
+            elif fsdp_version(self.teacher_model_policy.actor_module) == 2:
+                self.teacher_model_policy.actor_module.reshard()
+
+        return output
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="teacher_compute_log_prob")
