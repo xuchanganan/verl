@@ -11,6 +11,7 @@ enable: False
 enable_resource_pool: False
 n_gpus_per_node: 0
 nnodes: 0
+top_k: 100
 
 # FSDP strategy: "fsdp" or "fsdp2"
 strategy: ???
