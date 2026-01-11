@@ -212,7 +212,7 @@ class DataParallelPPOActor(BasePPOActor):
                             )
                     # comput top-k logits
                     if get_logits:
-                        top_k_logits_rmpad, top_k_indices_rmpad = torch.topk(logits_rmpad, top_k=top_k, dim=-1)
+                        top_k_logits_rmpad, top_k_indices_rmpad = torch.topk(logits_rmpad, top_k, dim=-1)
 
                 # gather log_prob if sp > 1
                 if self.use_ulysses_sp:
