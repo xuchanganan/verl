@@ -976,11 +976,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         get_logits = data.meta_info.pop("get_logits", False)
         with self.ulysses_sharding_manager:
             with adapter_ctx:
-                output, entropys, full_logits = self.actor.compute_log_prob(data=data, calculate_entropy=True, get_logits=get_logits)
+                output, entropys, top_k_logits, top_k_indices = self.actor.compute_log_prob(data=data, calculate_entropy=True, get_logits=get_logits)
             # teacher_full_logits
             tensors={"old_log_probs": output, "entropys": entropys}
             if get_logits:
-                tensors.update({"actor_full_logits": full_logits})
+                tensors.update({"actor_topk_logits": top_k_logits, "actor_topk_indices": top_k_indices})
             output = DataProto.from_dict(
                 tensors=tensors,
                 meta_info={"temperature": self.config.rollout.temperature},
@@ -1021,7 +1021,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         logger.debug("role: ref, max_token_len:{}, sp: {}, world_size: {}".format(data.meta_info["max_token_len"], self.ulysses_sequence_parallel_size, self.world_size))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, _, full_logits = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=False)
+            output, _, _, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=False)
             output = DataProto.from_dict(tensors={"ref_log_prob": output})
 
         output = output.to("cpu")
@@ -2326,9 +2326,9 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         get_logits = data.meta_info.pop("get_logits", False)
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, entropys, full_logits = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits)
+            output, entropys, top_k_logits, top_k_indices = self.teacher_model_policy.compute_log_prob(data=data, calculate_entropy=False, get_logits=get_logits)
             if get_logits:
-                output = DataProto.from_dict(tensors={"teacher_log_prob": output, "teacher_full_logits": full_logits})
+                output = DataProto.from_dict(tensors={"teacher_log_prob": output, "teacher_topk_logits": top_k_logits, "teacher_topk_indices": top_k_indices})
             else:
                 output = DataProto.from_dict(tensors={"teacher_log_prob": output})
 

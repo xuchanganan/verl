@@ -92,7 +92,7 @@ class DataParallelPPOActor(BasePPOActor):
             self.scaler = None
 
     def _forward_micro_batch(
-        self, micro_batch, temperature, calculate_entropy=False, get_logits=False
+        self, micro_batch, temperature, calculate_entropy=False, get_logits=False, top_k=100,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
@@ -210,6 +210,9 @@ class DataParallelPPOActor(BasePPOActor):
                             entropy_rmpad = torch.utils.checkpoint.checkpoint(
                                 self.compute_entropy_from_logits, logits_rmpad
                             )
+                    # comput top-k logits
+                    if get_logits:
+                        top_k_logits_rmpad, top_k_indices_rmpad = torch.topk(logits_rmpad, top_k=top_k, dim=-1)
 
                 # gather log_prob if sp > 1
                 if self.use_ulysses_sp:
@@ -228,8 +231,14 @@ class DataParallelPPOActor(BasePPOActor):
                             padding_size=pad_size,
                         )
                     if get_logits:
-                        logits_rmpad = gather_outputs_and_unpad(
-                            logits_rmpad,
+                        top_k_logits_rmpad = gather_outputs_and_unpad(
+                            top_k_logits_rmpad,
+                            gather_dim=0,
+                            unpad_dim=0,
+                            padding_size=pad_size,
+                        )
+                        top_k_indices_rmpad = gather_outputs_and_unpad(
+                            top_k_indices_rmpad,
                             gather_dim=0,
                             unpad_dim=0,
                             padding_size=pad_size,
@@ -244,8 +253,14 @@ class DataParallelPPOActor(BasePPOActor):
                         seqlen=seqlen,
                     )
                 if get_logits:
-                    full_logits = pad_input(
-                        hidden_states=logits_rmpad.unsqueeze(-1),
+                    top_k_logits = pad_input(
+                        hidden_states=top_k_logits_rmpad.unsqueeze(-1),
+                        indices=indices,
+                        batch=batch_size,
+                        seqlen=seqlen,
+                    )
+                    top_k_indices = pad_input(
+                        hidden_states=top_k_indices_rmpad.unsqueeze(-1),
                         indices=indices,
                         batch=batch_size,
                         seqlen=seqlen,
@@ -261,7 +276,8 @@ class DataParallelPPOActor(BasePPOActor):
                 if calculate_entropy:
                     entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
                 if get_logits:
-                    full_logits = full_logits.squeeze(-1)[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
+                    top_k_logits = top_k_logits.squeeze(-1)[:, -response_length - 1 : -1, :]
+                    top_k_indices = top_k_indices.squeeze(-1)[:, -response_length - 1 : -1, :]
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
 
             else:  # not using rmpad and no ulysses sp
@@ -282,8 +298,8 @@ class DataParallelPPOActor(BasePPOActor):
                 if self.use_fused_kernels:
                     log_probs = output.log_probs[:, -response_length - 1 : -1]
                     entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
-                    full_logits = output.logits[:, -response_length - 1 : -1, :] # (bsz, response_length, vocab_size)
-
+                    if get_logits:
+                        top_k_logits, top_k_indices = torch.topk(output.logits, top_k, dim=-1)
                 else:
                     logits = output.logits
 
@@ -296,12 +312,12 @@ class DataParallelPPOActor(BasePPOActor):
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
                     if get_logits:
-                        full_logits = logits
-            
-            if not get_logits:
-                full_logits = None
+                        top_k_logits, top_k_indices = torch.topk(logits, top_k, dim=-1)
 
-            return entropy, log_probs, full_logits
+            if not get_logits:
+                top_k_logits = top_k_indices = None
+
+            return entropy, log_probs, top_k_logits, top_k_indices
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -368,34 +384,38 @@ class DataParallelPPOActor(BasePPOActor):
 
         log_probs_lst = []
         entropy_lst = []
-        full_logits_lst = []
+        topk_logits_lst = []
+        topk_indices_lst = []
         for micro_batch in micro_batches:
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs, full_logits = self._forward_micro_batch(
+                entropy, log_probs, top_k_logits, top_k_indices = self._forward_micro_batch(
                     model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, get_logits=get_logits,
                 )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
                 entropy_lst.append(entropy)
             if get_logits:
-                full_logits_lst.append(full_logits)
+                topk_logits_lst.append(top_k_logits)
+                topk_indices_lst.append(top_k_indices)
 
         log_probs = torch.concat(log_probs_lst, dim=0)
         entropys = None
-        full_logits = None
+        full_topk_logits = None
+        full_topk_indices = None
         if calculate_entropy:
             entropys = torch.concat(entropy_lst, dim=0)
         if get_logits:
-            full_logits = torch.concat(full_logits_lst, dim=0)
+            full_topk_logits = torch.concat(topk_logits_lst, dim=0)
+            full_topk_indices = torch.concat(topk_indices_lst, dim=0)
 
         if use_dynamic_bsz:
             log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
             if calculate_entropy:
                 entropys = restore_dynamic_batch(entropys, batch_idx_list)
 
-        return log_probs, entropys, full_logits
+        return log_probs, entropys, full_topk_logits, full_topk_indices
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
@@ -468,7 +488,7 @@ class DataParallelPPOActor(BasePPOActor):
                     calculate_entropy = False
                     if entropy_coeff != 0:
                         calculate_entropy = True
-                    entropy, log_prob, _ = self._forward_micro_batch(
+                    entropy, log_prob, _, _ = self._forward_micro_batch(
                         model_inputs, temperature=temperature, calculate_entropy=calculate_entropy, get_logits=False
                     )
 
