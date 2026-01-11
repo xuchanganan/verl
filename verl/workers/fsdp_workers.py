@@ -2317,7 +2317,7 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             teacher_topk_logits = self.teacher_model_policy.get_student_topk_indices(data=data)
-            output = DataProto.from_dict(tensor={"teacher_topk_logits": teacher_topk_logits})
+            output = DataProto.from_dict(tensors={"teacher_topk_logits": teacher_topk_logits})
         
         output = output.to("cpu")
 
