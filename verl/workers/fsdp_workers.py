@@ -2301,8 +2301,8 @@ class TeacherModelWorker(ActorRolloutRefWorker):
         )[0]
         OmegaConf.set_struct(self.config.model, True)
         with open_dict(self.config):
-            self.config.model.use_remove_padding = use_remove_padding
-            self.config.model.use_fused_kernels = use_fused_kernels
+            self.config.use_remove_padding = use_remove_padding
+            self.config.use_fused_kernels = use_fused_kernels
         self.teacher_model_policy = DataParallelPPOActor(config=self.config, actor_module=self.teacher_module_fsdp)
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
