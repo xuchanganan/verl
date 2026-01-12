@@ -593,6 +593,7 @@ class DataParallelPPOActor(BasePPOActor):
         mini_batches = data.split(self.config.ppo_mini_batch_size)
 
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
+        logger.debug(f"on_policy={on_policy}, grad_clip={self.config.grad_clip}")
 
         metrics = {}
         for _ in range(self.config.ppo_epochs):
