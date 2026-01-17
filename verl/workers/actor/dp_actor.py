@@ -660,6 +660,11 @@ class DataParallelPPOActor(BasePPOActor):
                     # clip_cov -> verl.trainer.ppo.core_algos.compute_policy_loss_clip_cov
                     policy_loss_fn = get_policy_loss_fn(loss_mode)
 
+                    teacher_log_prob = model_inputs.get("teacher_log_prob", None)
+                    if teacher_log_prob is not None:
+                        reverse_kl = kl_penalty(log_prob, teacher_log_prob, kl_penalty='k3')
+                        advantages = -1 * reverse_kl
+
                     # Compute policy loss (any function is expected to return 2 values)
                     pg_loss, pg_metrics = policy_loss_fn(
                         old_log_prob=old_log_prob,
